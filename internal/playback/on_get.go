@@ -57,6 +57,8 @@ func seekAndMux(
 		dts := startOffset
 		prevInit := firstInit
 
+		buf := newBufReaderBuffer()
+
 		var r readSeekerAt = f
 
 		// skip the parts before the requested start instead of reading all of them
@@ -67,7 +69,7 @@ func seekAndMux(
 			}
 		}
 
-		segmentDuration, err := segmentFMP4MuxParts(ctx, r, dts, duration, firstInit.Tracks, m)
+		segmentDuration, err := segmentFMP4MuxParts(ctx, newBufReader(r, buf), dts, duration, firstInit.Tracks, m)
 		if err != nil {
 			return err
 		}
@@ -98,7 +100,7 @@ func seekAndMux(
 				dts = seg.Start.Sub(start) // this is positive
 			}
 
-			segmentDuration, err = segmentFMP4MuxParts(ctx, f, dts, duration, firstInit.Tracks, m)
+			segmentDuration, err = segmentFMP4MuxParts(ctx, newBufReader(f, buf), dts, duration, firstInit.Tracks, m)
 			if err != nil {
 				return err
 			}
