@@ -28,6 +28,13 @@ import (
 // the samples from the last sync sample before start, so earlier parts do not
 // change the output.
 //
+// Only the tracks that have samples in the parts near the requested start are
+// taken into account: a track can be declared in the init segment and receive no
+// samples at all, for instance the audio track of a camera that doesn't send
+// audio, and it must not prevent seeking. A track whose samples stopped long
+// before the requested start is ignored too: in this case the full walk would
+// output its last sample before start, and seeking doesn't.
+//
 // Any doubt (no valid part found, unexpected structure) falls back to the first
 // part, i.e. to the previous behavior.
 
@@ -209,6 +216,23 @@ func seekFindPartFrom(
 	return nil, false
 }
 
+// seekActiveTracks returns the tracks that have samples in parts.
+func seekActiveTracks(parts []*seekPart, tracks []*fmp4.InitTrack) []*fmp4.InitTrack {
+	var out []*fmp4.InitTrack
+	for _, track := range tracks {
+	outer:
+		for _, p := range parts {
+			for _, t := range p.trafs {
+				if t.trackID == track.ID && len(t.entries) != 0 {
+					out = append(out, track)
+					break outer
+				}
+			}
+		}
+	}
+	return out
+}
+
 // seekHasSyncBefore checks that, for every track, the part contains a sync sample
 // that starts before target. "Before" uses the same arithmetic as
 // segmentFMP4MuxParts, where a sample is before start when
@@ -340,16 +364,25 @@ func seekFMP4Part(
 	for range seekMaxStepsBack {
 		lo := seekLocate(r, fileSize, first, tracks, target-margin)
 
-		best := int64(-1)
+		var parts []*seekPart
 		for p := lo; p != nil && p.start < target; {
-			if seekHasSyncBefore(p, target, tracks) {
-				best = p.offset
-			}
+			parts = append(parts, p)
 			next, ok2 := seekReadPart(r, fileSize, p.offset+p.size, tracks)
 			if !ok2 {
 				break
 			}
 			p = next
+		}
+
+		active := seekActiveTracks(parts, tracks)
+
+		best := int64(-1)
+		if len(active) != 0 {
+			for _, p := range parts {
+				if seekHasSyncBefore(p, target, active) {
+					best = p.offset
+				}
+			}
 		}
 
 		if best >= 0 {

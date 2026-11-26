@@ -27,10 +27,18 @@ const (
 	seekTestParts      = 150
 )
 
+type seekTestAudio int
+
+const (
+	seekTestNoAudio seekTestAudio = iota
+	seekTestAudioSamples
+	seekTestAudioDeclared // declared in the init segment, without samples
+)
+
 // writeSeekTestSegment writes a 300 s segment: H264 at 25 fps with a GOP that
 // does not line up with parts, AAC audio, and payloads that contain fake
 // "moof" boxes so that the forward scan meets false candidates.
-func writeSeekTestSegment(t *testing.T, fpath string, withAudio bool, gop int) {
+func writeSeekTestSegment(t *testing.T, fpath string, audio seekTestAudio, gop int) {
 	t.Helper()
 
 	init := fmp4.Init{
@@ -40,7 +48,7 @@ func writeSeekTestSegment(t *testing.T, fpath string, withAudio bool, gop int) {
 			Codec:     &mcodecs.H264{SPS: test.FormatH264.SPS, PPS: test.FormatH264.PPS},
 		}},
 	}
-	if withAudio {
+	if audio != seekTestNoAudio {
 		init.Tracks = append(init.Tracks, &fmp4.InitTrack{
 			ID:        2,
 			TimeScale: 48000,
@@ -86,7 +94,7 @@ func writeSeekTestSegment(t *testing.T, fpath string, withAudio bool, gop int) {
 		}
 		p := fmp4.Part{SequenceNumber: uint32(part), Tracks: []*fmp4.PartTrack{videoTrack}}
 
-		if withAudio {
+		if audio == seekTestAudioSamples {
 			audioTrack := &fmp4.PartTrack{ID: 2, BaseTime: audioTime}
 			for i, left := 0, uint32(audioPartTicks); left > 0; i++ {
 				d := min(uint32(1024), left)
@@ -144,17 +152,18 @@ func TestSeekSameOutputAsFullWalk(t *testing.T) {
 	defer func() { seekScanLimit = oldLimit }()
 
 	for _, ca := range []struct {
-		name      string
-		withAudio bool
-		gop       int
+		name  string
+		audio seekTestAudio
+		gop   int
 	}{
-		{"video", false, 37}, // GOP not a divisor of the part length
-		{"video+audio", true, 37},
-		{"video+audio long GOP", true, 400}, // 16 s, longer than seekLandBefore
+		{"video", seekTestNoAudio, 37}, // GOP not a divisor of the part length
+		{"video+audio", seekTestAudioSamples, 37},
+		{"video+audio long GOP", seekTestAudioSamples, 400}, // 16 s, longer than seekLandBefore
+		{"video+declared audio", seekTestAudioDeclared, 37},
 	} {
 		t.Run(ca.name, func(t *testing.T) {
 			fpath := filepath.Join(t.TempDir(), "seg.mp4")
-			writeSeekTestSegment(t, fpath, ca.withAudio, ca.gop)
+			writeSeekTestSegment(t, fpath, ca.audio, ca.gop)
 
 			seg := &recordstore.Segment{
 				Fpath: fpath,
@@ -191,7 +200,7 @@ func TestSeekFindsLatePart(t *testing.T) {
 	defer func() { seekScanLimit = oldLimit }()
 
 	fpath := filepath.Join(t.TempDir(), "seg.mp4")
-	writeSeekTestSegment(t, fpath, true, 37)
+	writeSeekTestSegment(t, fpath, seekTestAudioSamples, 37)
 
 	f, err := os.Open(fpath)
 	require.NoError(t, err)
@@ -223,7 +232,7 @@ func TestSeekTruncatedFile(t *testing.T) {
 	defer func() { seekScanLimit = oldLimit }()
 
 	fpath := filepath.Join(t.TempDir(), "seg.mp4")
-	writeSeekTestSegment(t, fpath, true, 37)
+	writeSeekTestSegment(t, fpath, seekTestAudioSamples, 37)
 
 	data, err := os.ReadFile(fpath)
 	require.NoError(t, err)
@@ -262,7 +271,7 @@ func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // Seeking must cost far fewer reads than a walk from the segment start.
 func TestSeekReadsLittle(t *testing.T) {
 	fpath := filepath.Join(t.TempDir(), "seg.mp4")
-	writeSeekTestSegment(t, fpath, true, 37)
+	writeSeekTestSegment(t, fpath, seekTestAudioSamples, 37)
 
 	f, err := os.Open(fpath)
 	require.NoError(t, err)
@@ -316,7 +325,7 @@ func TestSeekParsingStartsAtPart(t *testing.T) {
 	defer func() { seekScanLimit = oldLimit }()
 
 	fpath := filepath.Join(t.TempDir(), "seg.mp4")
-	writeSeekTestSegment(t, fpath, true, 37)
+	writeSeekTestSegment(t, fpath, seekTestAudioSamples, 37)
 
 	f, err := os.Open(fpath)
 	require.NoError(t, err)
@@ -354,4 +363,32 @@ type bytesBuffer struct{ n int }
 func (b *bytesBuffer) Write(p []byte) (int, error) {
 	b.n += len(p)
 	return len(p), nil
+}
+
+// A track declared in the init segment without samples (the audio track of a
+// camera that doesn't send audio) must not prevent seeking.
+func TestSeekDeclaredTrackWithoutSamples(t *testing.T) {
+	oldLimit := seekScanLimit
+	seekScanLimit = 256 * 1024
+	defer func() { seekScanLimit = oldLimit }()
+
+	fpath := filepath.Join(t.TempDir(), "seg.mp4")
+	writeSeekTestSegment(t, fpath, seekTestAudioDeclared, 37)
+
+	f, err := os.Open(fpath)
+	require.NoError(t, err)
+	defer f.Close()
+
+	init, _, err := recordstore.SegmentFMP4ReadHeader(f)
+	require.NoError(t, err)
+	require.Len(t, init.Tracks, 2)
+
+	firstPartOffset, err := f.Seek(0, io.SeekCurrent)
+	require.NoError(t, err)
+	st, err := f.Stat()
+	require.NoError(t, err)
+
+	target := 250 * time.Second
+	off := seekFMP4Part(f, st.Size(), firstPartOffset, init.Tracks, target)
+	require.Greater(t, off, st.Size()/2)
 }
