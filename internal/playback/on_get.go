@@ -57,7 +57,17 @@ func seekAndMux(
 		dts := startOffset
 		prevInit := firstInit
 
-		segmentDuration, err := segmentFMP4MuxParts(ctx, f, dts, duration, firstInit.Tracks, m)
+		var r readSeekerAt = f
+
+		// skip the parts before the requested start instead of reading all of them
+		if startOffset < 0 && !seekDisabled {
+			r, err = seekToStart(f, firstInit.Tracks, -startOffset)
+			if err != nil {
+				return err
+			}
+		}
+
+		segmentDuration, err := segmentFMP4MuxParts(ctx, r, dts, duration, firstInit.Tracks, m)
 		if err != nil {
 			return err
 		}
