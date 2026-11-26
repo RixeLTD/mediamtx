@@ -205,9 +205,21 @@ func segmentFMP4ReadDurationFromParts(
 		return 0, fmt.Errorf("no moof boxes found")
 	}
 
+	return segmentFMP4ReadMoofDuration(r, init, lastMoofPos)
+}
+
+// segmentFMP4ReadMoofDuration returns the end time of the part
+// whose moof box starts at lastMoofPos.
+func segmentFMP4ReadMoofDuration(
+	r io.ReadSeeker,
+	init *fmp4.Init,
+	lastMoofPos int64,
+) (time.Duration, error) {
+	buf := make([]byte, 8)
+
 	// open last moof
 
-	_, err = r.Seek(lastMoofPos+8, io.SeekStart)
+	_, err := r.Seek(lastMoofPos+8, io.SeekStart)
 	if err != nil {
 		return 0, err
 	}
@@ -367,9 +379,13 @@ func SegmentFMP4ReadHeaderAndDuration(
 	}
 
 	// if duration is not present in the header, compute it
-	// by parsing each part
+	// from the last part, found from the end of the file,
+	// or by parsing each part
 	if duration == 0 {
-		duration, err = segmentFMP4ReadDurationFromParts(ctx, f, init)
+		duration, err = segmentFMP4ReadDurationFromTail(ctx, f, init)
+		if err != nil && ctx.Err() == nil {
+			duration, err = segmentFMP4ReadDurationFromParts(ctx, f, init)
+		}
 		if err != nil {
 			return nil, 0, err
 		}
