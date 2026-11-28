@@ -184,13 +184,11 @@ func (ssf *subStreamFormat) writeUnitInner(u *unit.Unit) error {
 	ssf.streamFormat.writeRTSP(u.RTPPackets, u.NTP)
 
 	for sr, onData := range ssf.streamFormat.onDatas {
-		csr := sr
-		cOnData := onData
 		sr.push(func() error {
-			if !csr.SkipOutboundBytes {
+			if !sr.SkipOutboundBytes {
 				ssf.streamFormat.outboundBytes.Add(size)
 			}
-			return cOnData(u)
+			return onData(u)
 		})
 	}
 

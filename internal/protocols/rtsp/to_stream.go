@@ -39,9 +39,6 @@ func ToStream(
 ) {
 	for _, medi := range medias {
 		for _, forma := range medi.Formats {
-			cmedi := medi
-			cforma := forma
-
 			var ntpStat ntpState
 
 			if !pathConf.UseAbsoluteTimestamp {
@@ -54,7 +51,7 @@ func ToStream(
 					return time.Time{}, true
 
 				case ntpStateInitial:
-					ntp, avail := source.PacketNTP(cmedi, pkt)
+					ntp, avail := source.PacketNTP(medi, pkt)
 					if !avail {
 						log.Log(logger.Warn, "received RTP packet without absolute time, skipping it")
 						return time.Time{}, false
@@ -64,7 +61,7 @@ func ToStream(
 					return ntp, true
 
 				default: // ntpStateAvailable
-					ntp, avail := source.PacketNTP(cmedi, pkt)
+					ntp, avail := source.PacketNTP(medi, pkt)
 					if !avail {
 						panic("should not happen")
 					}
@@ -73,8 +70,8 @@ func ToStream(
 				}
 			}
 
-			source.OnPacketRTP(cmedi, cforma, func(pkt *rtp.Packet) {
-				pts, ok := source.PacketPTS(cmedi, pkt)
+			source.OnPacketRTP(medi, forma, func(pkt *rtp.Packet) {
+				pts, ok := source.PacketPTS(medi, pkt)
 				if !ok {
 					return
 				}
@@ -84,7 +81,7 @@ func ToStream(
 					return
 				}
 
-				(*subStream).WriteUnit(cmedi, cforma, &unit.Unit{
+				(*subStream).WriteUnit(medi, forma, &unit.Unit{
 					PTS:        pts,
 					NTP:        ntp,
 					RTPPackets: []*rtp.Packet{pkt},

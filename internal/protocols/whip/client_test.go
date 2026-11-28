@@ -215,9 +215,8 @@ func TestClientRead(t *testing.T) {
 			}
 
 			for i, track := range cl.InboundTracks() {
-				ci := i
 				track.OnPacketRTP = func(_ *rtp.Packet) {
-					close(recv[ci])
+					close(recv[i])
 				}
 			}
 
@@ -322,9 +321,8 @@ func TestClientPublish(t *testing.T) {
 							}
 
 							for i, track := range pc.InboundTracks() {
-								ci := i
 								track.OnPacketRTP = func(_ *rtp.Packet) {
-									close(recv[ci])
+									close(recv[i])
 								}
 							}
 
