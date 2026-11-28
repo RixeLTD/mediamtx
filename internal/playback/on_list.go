@@ -13,10 +13,16 @@ import (
 
 	"github.com/bluenviron/mediacommon/v2/pkg/formats/fmp4"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 )
+
+// maxParallelSegmentReads is the maximum number of segments read at once.
+// Each read blocks an OS thread while the file is opened, therefore an
+// unbounded number of reads can exhaust OS threads when storage is slow.
+const maxParallelSegmentReads = 16
 
 func parseSegment(ctx context.Context, seg *recordstore.Segment) (*parsedSegment, error) {
 	init, duration, err := recordstore.SegmentFMP4ReadHeaderAndDuration(ctx, seg.Fpath)
@@ -32,30 +38,40 @@ func parseSegment(ctx context.Context, seg *recordstore.Segment) (*parsedSegment
 }
 
 func parseSegments(ctx context.Context, segments []*recordstore.Segment) ([]*parsedSegment, error) {
-	parsed := make([]*parsedSegment, len(segments))
-	ch := make(chan error)
-
 	// process segments in parallel.
 	// parallel random access should improve performance in most cases.
 	// ref: https://pkolaczk.github.io/disk-parallelism/
-	for i, seg := range segments {
-		go func(i int, seg *recordstore.Segment) {
-			var err error
-			parsed[i], err = parseSegment(ctx, seg)
-			ch <- err
-		}(i, seg)
+
+	workerCount := min(maxParallelSegmentReads, len(segments))
+	parsed := make([]*parsedSegment, len(segments))
+	group, workerCtx := errgroup.WithContext(ctx)
+
+	for worker := range workerCount {
+		group.Go(func() error {
+			for i := worker; i < len(segments); i += workerCount {
+				if err := workerCtx.Err(); err != nil {
+					return err
+				}
+
+				seg, err := parseSegment(workerCtx, segments[i])
+				if err != nil {
+					return err
+				}
+				parsed[i] = seg
+			}
+			return nil
+		})
 	}
 
-	var err error
-
-	for range segments {
-		err2 := <-ch
-		if err2 != nil {
-			err = err2
-		}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 
-	return parsed, err
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	return parsed, nil
 }
 
 func urlScheme(ctx *gin.Context, trustedProxies conf.IPNetworks, encryption bool) string {
